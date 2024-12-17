@@ -1,0 +1,255 @@
+---
+title: "Multigroup - SES"
+author: "Ayla Pollmann"
+date: "2024-01-06"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+**Analysis**
+
+In this script, we conduct the multigroup analysis of SES and peers and sex.
+
+***
+
+```{r setup, include=FALSE}
+
+packages <- c(
+  "lavaan", "sjmisc", "corrplot", "semTools", "tidyverse", "ggplot2", 
+  "readxl", "tidyr", "dplyr", "semPlot","doSNOW","parallel","foreach"
+)
+
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages])
+}
+
+invisible(lapply(packages, library, character.only = TRUE))
+
+rm(installed_packages, packages)
+
+set.seed(245)
+```
+
+```{r, include = FALSE}
+#Load ABCD data
+```
+
+# SES - Free Model
+
+SES x brain connectivity x youth problems 
+
+```{r, warning=FALSE}
+FreeMG<- '
+# Create between components (random intercepts)
+RIx =~ 1*In1 + 1*In2 + 1*In3
+RIy =~ 1*b1Scaled + 1*b2Scaled + 1*b3Scaled
+RIz =~ 1*m1 + 1*m2 + 1*m3
+
+# Create within-person centered variables
+wx1 =~ 1*In1  #each Inactor loading set to 1
+wx2 =~ 1*In2
+wx3 =~ 1*In3
+wy1 =~ 1*b1Scaled
+wy2 =~ 1*b2Scaled
+wy3 =~ 1*b3Scaled
+wz1 =~ 1*m1
+wz2 =~ 1*m2
+wz3 =~ 1*m3
+
+# Estimate lagged effects between within-person centered variables
+wx2 + wy2 + wz2 ~ wx1 + wy1 + wz1
+wx3 + wy3 + wz3 ~ wx2 + wy2 + wz2
+
+# Estimate covariance between within-person centered variables at first wave
+wx1 ~~ wy1 # Covariance
+wx1 ~~ wz1
+wy1 ~~ wz1
+
+# Estimate covariances between residuals of within-person centered variables 
+# (i.e., innovations)
+wx2 ~~ wy2 
+wx2 ~~ wz2
+wy2 ~~ wz2
+wx3 ~~ wy3
+wx3 ~~ wz3
+wy3 ~~ wz3
+
+# Estimate variance and covariance of random intercepts
+RIx ~~ RIx
+RIy ~~ RIy
+RIz ~~ RIz
+RIx ~~ RIy
+RIx ~~ RIz
+RIy ~~ RIz
+
+# Estimate (residual) variance of within-person centered variables
+wx1 ~~ wx1 # Variances
+wy1 ~~ wy1
+wz1 ~~ wz1
+wx2 ~~ wx2 # Residual variances
+wy2 ~~ wy2
+wz2 ~~ wz2
+wx3 ~~ wx3
+wy3 ~~ wy3
+wz3 ~~ wz3
+'
+
+FreeMG_Sex_fit <- lavaan::lavaan(FreeMG,
+                             data = Data,
+                             meanstructure = TRUE, 
+                             missing = 'fiml',
+                             int.ov.free = TRUE,
+                             group = "Sex")
+```
+
+# Constrain Multigroup Paths
+
+```{r, warning=FALSE}
+part1 <- '
+  RIx =~ 1*In1 + 1*In2 + 1*In3
+  RIy =~ 1*b1Scaled + 1*b2Scaled + 1*b3Scaled
+  RIz =~ 1*m1 + 1*m2 + 1*m3
+  
+  wx1 =~ 1*In1 
+  wx2 =~ 1*In2
+  wx3 =~ 1*In3
+  wy1 =~ 1*b1Scaled
+  wy2 =~ 1*b2Scaled
+  wy3 =~ 1*b3Scaled
+  wz1 =~ 1*m1
+  wz2 =~ 1*m2
+  wz3 =~ 1*m3
+'
+
+part2 <-'
+  
+  wx1 ~~ wy1
+  wx1 ~~ wz1
+  wy1 ~~ wz1
+  
+  wx2 ~~ wy2 
+  wx2 ~~ wz2
+  wy2 ~~ wz2
+  wx3 ~~ wy3
+  wx3 ~~ wz3
+  wy3 ~~ wz3
+  
+  RIx ~~ RIx
+  RIy ~~ RIy
+  RIz ~~ RIz
+  RIx ~~ RIy
+  RIx ~~ RIz
+  RIy ~~ RIz
+
+  wx1 ~~ wx1
+  wy1 ~~ wy1
+  wz1 ~~ wz1
+  wx2 ~~ wx2
+  wy2 ~~ wy2
+  wz2 ~~ wz2
+  wx3 ~~ wx3
+  wy3 ~~ wy3
+  wz3 ~~ wz3'
+  
+list <- c('wx2 ~ c(b1Scaled, b1Scaled) * wy1 + wx1 + wz1
+           wy2 + wz2 ~ wx1 + wy1 + wz1
+           wx3 + wy3 + wz3 ~ wx2 + wy2 + wz2', 
+          
+          'wx2 ~ c(c1, c1) * wz1 +  wx1 + wy1
+           wy2 + wz2 ~ wx1 + wy1 + wz1
+           wx3 + wy3 + wz3 ~ wx2 + wy2 + wz2',
+          
+          'wy2 ~ c(d1, d1) * wx1 + wy1 + wz1
+           wx2 + wz2 ~ wx1 + wy1 + wz1
+           wx3 + wy3 + wz3 ~ wx2 + wy2 + wz2', 
+          
+          'wy2 ~ c(f1, f1) * wz1 +  wx1 + wy1
+           wx2 + wz2 ~ wx1 + wy1 + wz1
+           wx3 + wy3 + wz3 ~ wx2 + wy2 + wz2',
+          
+          'wz2 ~ c(g1, g1) * wx1 + wy1 + wz1
+           wx2 + wy2 ~ wx1 + wy1 + wz1
+           wx3 + wy3 + wz3 ~ wx2 + wy2 + wz2',
+          
+          'wz2 ~ c(h1, h1) * wy1 +  wx1 + wz1
+           wx2 + wy2 ~ wx1 + wy1 + wz1
+           wx3 + wy3 + wz3 ~ wx2 + wy2 + wz2',
+          
+          'wx3 ~ c(b2Scaled, b2Scaled) * wy2 + wx2 + wz2
+           wx2 + wy2 + wz2 ~ wx1 + wy1 + wz1
+           wz3 + wy3 ~ wx2 + wy2 + wz2',
+          
+          'wx3 ~ c(c2, c2) * wz2 + wx2 + wy2
+           wx2 + wy2 + wz2 ~ wx1 + wy1 + wz1
+           wz3 + wy3 ~ wx2 + wy2 + wz2',
+          
+          'wy3 ~ c(d2, d2) * wx2 + wy2 + wz2
+           wx2 + wy2 + wz2 ~ wx1 + wy1 + wz1
+           wx3 + wz3 ~ wx2 + wy2 + wz2',
+          
+          'wy3 ~ c(f2, f2) * wz2 + wx2 + wy2
+           wx2 + wy2 + wz2 ~ wx1 + wy1 + wz1
+           wx3 + wz3 ~ wx2 + wy2 + wz2',
+          
+          'wz3 ~ c(g2, g2) * wx2 + wy2 + wz2
+           wx2 + wy2 + wz2 ~ wx1 + wy1 + wz1
+           wx3 + wy3 ~ wx2 + wy2 + wz2',
+          
+          'wz3 ~ c(h2, h2) * wy2 + wx2 + wz2
+           wx2 + wy2 + wz2 ~ wx1 + wy1 + wz1
+           wx3 + wy3 ~ wx2 + wy2 + wz2')
+```
+
+# Result Sex
+
+```{r, warning=FALSE}
+for (coefficient in list) {
+  model_specification <- paste(part1, coefficient, part2)
+
+  ConMG_Sex_fit <- lavaan(model_specification, 
+                                data = Data,
+                                meanstructure = TRUE, 
+                                int.ov.free = TRUE,
+                                missing = 'fiml',
+                                group = "Sex")
+  
+  anova_result <- anova(FreeMG_Sex_fit, ConMG_Sex_fit)
+  print(coefficient)
+  #print(summary(ConMG_Sex_fit))
+  print(ConMG_Sex_fit)
+  print(anova_result)
+ 
+  filename <- paste0("", coefficient, ".csv")
+  
+  write_csv(as.data.frame(anova_result), filename)
+}
+```
+
+```{r, include = FALSE}
+all_files = list.files(pattern = "\\.csv$")
+num_files = length(all_files)
+
+cl <- makeCluster(min(num_files, floor(detectCores()*0.9)), outfile = "")
+registerDoSNOW(cl)
+
+dataset <- foreach(i=1:num_files, .combine='rbind') %dopar% {
+  
+  data <- read.csv(all_files[i], header=TRUE)
+  
+  file_title <- tools::file_path_sans_ext(basename(all_files[i]))
+  
+  data$title <- file_title
+  
+  return(data)
+}
+
+stopCluster(cl)
+registerDoSEQ()
+```
+
+```{r, include = FALSE}
+write.csv(dataset, file='Local_ANOVA_SES_Sex.csv', row.names = FALSE)
+```
