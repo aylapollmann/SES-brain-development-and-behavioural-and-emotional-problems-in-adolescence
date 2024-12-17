@@ -1,5 +1,4 @@
-# SES-brain-development-and-behavioural-and-emotional-problems-in-adolescence
-This code belongs to the publication: 
+This code underlies the publication: 
 Pollmann, A., Rakesh, D., Fuhrmann, D. (in preparation), SES, brain development and behavioural and emotional problems in early adolescence: Findings from the ABCD study.  
 
 # Abstract
