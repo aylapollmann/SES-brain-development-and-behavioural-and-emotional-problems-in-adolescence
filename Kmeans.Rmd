@@ -1,0 +1,988 @@
+---
+title: "RI-CLPM P4 - SES"
+author: "Ayla Pollmann"
+date: "2023-07-28"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+# Introduction
+
+In this script, we are analyzing SES (measured as income-to-needs ratio) and their relationship with mental health & brain development.
+
+***
+
+```{r setup, include=FALSE}
+packages <- c(
+  "lavaan", "sjmisc", "corrplot", "semTools", "tidyverse", "ggplot2", 
+  "readxl", "semPlot", "tidyr", "dplyr", "extrafont", "reshape2", 
+  "readr", "factoextra", "NbClust", "mice", "naniar", "writexl", 
+  "mdatools", "PerformanceAnalytics", "jmv", "caret", "MASS", 
+  "gplots", "mclust", "car", "reshape", "nnet", "kableExtra", 
+  "ggeffects", "marginaleffects", "FSA", "broom", "sjlabelled", 
+  "vtable", "pls", "cowplot", "patchwork", "hrbrthemes","patchwork",
+  "officer","flextable"
+)
+
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages])
+}
+
+invisible(lapply(packages, library, character.only = TRUE))
+
+rm(installed_packages,packages)
+
+set.seed(245)
+```
+
+```{r, include = FALSE}
+#LOAD ABCD DATA
+```
+
+# Elbow & Silhouette Method to determine number of clusters
+```{r}
+jpeg(file="1. Elb_Optimal Nr of Clusters.jpeg")
+Elb <- fviz_nbclust(DataImp[,22:23], kmeans, method = "wss") +  #within cluster sums of squares
+     labs(subtitle = "1. Elbow method")
+Elb
+dev.off()
+
+jpeg(file="1. Sil_Optimal Nr of Clusters.jpeg")
+Sil <- fviz_nbclust(DataImp[,22:23], kmeans, method = "silhouette")+   #average silhouette
+      labs(subtitle = "1. Silhouette method")
+Sil
+dev.off()
+
+rm(Elb,Sil)
+```
+
+# K-means Clustering - Trajectory & Height
+```{r}
+set.seed(345)
+Kmeans<- kmeans(DataImp[,22:23], 2, iter.max = 10, nstart = 50) 
+Kmeans$size
+Kmeans$centers
+summary(Kmeans)
+```
+
+```{r}
+Groups <- as.factor(Kmeans$cluster)
+samplesize <- 9495
+id=factor(1:samplesize)
+my_colors <- c("#00486b","#6591a3")
+
+PlotCluster <- data.frame(c(DataImp$b1),     
+                              c(DataImp$b2),
+                              c(DataImp$b3),
+                              as.factor(c(id,id)),         
+                              as.factor(Groups))              
+colnames(PlotCluster)<-c('~10 Years','~12 Years','~14 Years','ID','Cluster')  
+
+BrainPlot<-melt(PlotCluster,by='ID')
+
+BrainPlot <- ggplot(BrainPlot,aes(variable,value,group=ID,col=Cluster))+
+  geom_point(position = "jitter", size=1,alpha=.3)+
+  geom_line(position = "jitter", alpha=.1)+
+  ylab('FA per participant')+
+  xlab('Timepoints')+
+  facet_grid(~factor(Cluster, levels=c("1","2")), 
+             labeller = as_labeller(c("1" = "Group 1: High & Increasing", "2" = "Group 2: Low & Increasing")))+
+  scale_color_manual(values = my_colors,
+                     breaks =c("1","2"))+
+  guides(col = FALSE)+
+  theme_ipsum() +
+  theme(axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 12, face = "bold"), #cluster name
+        axis.title.x = element_text(hjust = 0.5, size = 12, face = "bold"), #timepoints
+        axis.title.y = element_text(hjust = 0.5, size = 12, face = "bold"), #FA
+        axis.text.x = element_text(size = 9, angle = 10),
+        plot.background = element_rect(fill = "white", color = NA),
+        strip.text.x = element_text(hjust = 0.5))
+
+BrainPlot + geom_smooth(method = "lm", formula = y ~ poly(x, 2), se = FALSE, aes(group = Cluster), color="#b93956") 
+
+ggsave(file='1. Clusters.png', width=7, height=5, dpi=800)
+```
+
+# Regressions
+```{r}
+DataImp$Groups <- as.factor(Kmeans$cluster)
+DataImp[,2:23] <- apply(DataImp[,2:23],2, function(x) as.numeric(as.character(x)))
+
+# Regression of Cluster groups with income, interacting with gender
+mod_SES <- glm(Groups ~ In1*SexOrthogonal, data = DataImp, family = binomial(link = "logit"))
+
+# Regression of Cluster groups with income, interacting with gender
+mod_Ed <- glm(Groups ~ Ed*SexOrthogonal, data = DataImp, family = binomial(link = "logit"))
+
+# Regression of Cluster groups with income, interacting with gender
+mod_ADI <- glm(Groups ~ ADI*SexOrthogonal, data = DataImp, family = binomial(link = "logit"))
+
+# Combine
+mod_All <- glm(Groups ~ (In1 + Ed + ADI) * SexOrthogonal, data = DataImp, family = binomial(link = "logit"))
+```
+
+```{r}
+# Helmert coding
+DataImp$GroupsOrthogonal <- as.factor(DataImp$Groups)
+contrasts(DataImp$GroupsOrthogonal) <- contr.helmert(nlevels(DataImp$GroupsOrthogonal))
+
+# Regression of mental health issues at T3 dependent on Cluster groups, interacting with gender
+mod_MH <- lm(m3 ~ GroupsOrthogonal*SexOrthogonal, data = DataImp)
+```
+
+```{r}
+extract_model_info <- function(model, model_name) {
+  tidy_model <- tidy(model, conf.int = TRUE)
+  glance_model <- glance(model)
+  
+  data.frame(
+    Model = model_name,
+    Term = tidy_model$term,
+    Estimate = round(tidy_model$estimate, 3),
+    CI_Lower = round(tidy_model$conf.low, 3),
+    CI_Upper = round(tidy_model$conf.high, 3),
+    P_Value = round(tidy_model$p.value, 3),
+    AIC = round(glance_model$AIC, 2)
+  )
+}
+
+results_SES <- extract_model_info(mod_SES, "Income-to-Need")
+results_Ed <- extract_model_info(mod_Ed, "Education")
+results_ADI <- extract_model_info(mod_ADI, "Area Deprivation")
+
+all_results <- rbind(results_SES, results_Ed, results_ADI)
+
+ft <- flextable(all_results)
+ft <- autofit(ft)
+ft <- add_header_lines(ft, "Logistic Regression Results for Cluster Group Membership")
+
+doc <- read_docx()
+doc <- body_add_flextable(doc, ft)
+print(doc, target = "Regression Results SES.docx")
+
+### For Mental Health ###
+
+model_summary <- summary(mod_MH)
+tidy_results <- tidy(mod_MH, conf.int = TRUE)
+glance_results <- glance(mod_MH)
+
+results_table <- data.frame(
+  Term = tidy_results$term,
+  Estimate = round(tidy_results$estimate, 3),
+  Std_Error = round(tidy_results$std.error, 3),
+  t_value = round(tidy_results$statistic, 3),
+  P_value = round(tidy_results$p.value, 3),
+  CI_Lower = round(tidy_results$conf.low, 3),
+  CI_Upper = round(tidy_results$conf.high, 3)
+)
+
+ft <- flextable(results_table)
+ft <- autofit(ft)
+ft <- add_header_lines(ft, "Linear Regression Results: Behavioural/Emotional Issues")
+
+ft <- add_footer_lines(ft, c(
+  paste("R-squared:", round(glance_results$r.squared, 3)),
+  paste("Adjusted R-squared:", round(glance_results$adj.r.squared, 3)),
+  paste("F-statistic:", round(glance_results$statistic, 2), 
+        "on", glance_results$df, "and", glance_results$df.residual, "DF"),
+  paste("p-value:", format.pval(glance_results$p.value, digits = 3))
+))
+
+doc <- read_docx()
+doc <- body_add_flextable(doc, ft)
+
+print(doc, target = "Regression Results - MH.docx")
+```
+
+## Regression results
+```{r}
+options(scipen = 999)
+
+sink("1. SES.txt")
+Anova(mod_SES, type=3) 
+summary(mod_SES)
+zPT <- summary(mod_SES)$coefficients/summary(mod_SES)$standard.errors
+zPT
+pPT<- (1 - pnorm(abs(zPT), 0, 1)) * 2
+pPT
+null_deviance <- mod_SES$null.deviance
+residual_deviance <- mod_SES$deviance
+df_diff <- mod_SES$df.null - mod_SES$df.residual
+chi_square <- null_deviance - residual_deviance
+p_value <- pchisq(chi_square, df_diff, lower.tail = FALSE)
+print("Overall Model χ² Test:")
+print(paste("χ²(", df_diff, ") =", round(chi_square, 2), ", p =", format.pval(p_value, digits = 3)))
+sink()
+
+sink("1. Education.txt")
+Anova(mod_Ed, type=3) 
+summary(mod_Ed)
+zPT <- summary(mod_Ed)$coefficients/summary(mod_Ed)$standard.errors
+zPT
+pPT <- (1 - pnorm(abs(zPT), 0, 1)) * 2
+pPT
+null_deviance <- mod_Ed$null.deviance
+residual_deviance <- mod_Ed$deviance
+df_diff <- mod_Ed$df.null - mod_Ed$df.residual
+chi_square <- null_deviance - residual_deviance
+p_value <- pchisq(chi_square, df_diff, lower.tail = FALSE)
+print("Overall Model χ² Test:")
+print(paste("χ²(", df_diff, ") =", round(chi_square, 2), ", p =", format.pval(p_value, digits = 3)))
+sink()
+
+sink("1. ADI.txt")
+Anova(mod_ADI, type=3) 
+summary(mod_ADI)
+zPT <- summary(mod_ADI)$coefficients/summary(mod_ADI)$standard.errors
+zPT
+pPT<- (1 - pnorm(abs(zPT), 0, 1)) * 2
+null_deviance <- mod_ADI$null.deviance
+residual_deviance <- mod_ADI$deviance
+df_diff <- mod_ADI$df.null - mod_ADI$df.residual
+chi_square <- null_deviance - residual_deviance
+p_value <- pchisq(chi_square, df_diff, lower.tail = FALSE)
+print("Overall Model χ² Test:")
+print(paste("χ²(", df_diff, ") =", round(chi_square, 2), ", p =", format.pval(p_value, digits = 3)))
+sink()
+
+sink("1. Combined.txt")
+Anova(mod_All, type=3) 
+summary(mod_All)
+zPT <- summary(mod_All)$coefficients/summary(mod_All)$standard.errors
+zPT
+pPT<- (1 - pnorm(abs(zPT), 0, 1)) * 2
+null_deviance <- mod_All$null.deviance
+residual_deviance <- mod_All$deviance
+df_diff <- mod_All$df.null - mod_All$df.residual
+chi_square <- null_deviance - residual_deviance
+p_value <- pchisq(chi_square, df_diff, lower.tail = FALSE)
+print("Overall Model χ² Test:")
+print(paste("χ²(", df_diff, ") =", round(chi_square, 2), ", p =", format.pval(p_value, digits = 3)))
+sink()
+
+sink("1. MH.txt")
+print("ANOVA Table:")
+print(anova(mod_MH))
+print("Model Summary:")
+print(summary(mod_MH))
+coef_table <- summary(mod_MH)$coefficients
+print("Coefficients Table:")
+print(coef_table)
+f_statistic <- summary(mod_MH)$fstatistic
+df1 <- f_statistic[2]
+df2 <- f_statistic[3]
+p_value <- pf(f_statistic[1], df1, df2, lower.tail = FALSE)
+print("Overall Model F-Test:")
+print(paste("F(", df1, ",", df2, ") =", round(f_statistic[1], 2), 
+            ", p =", format.pval(p_value, digits = 3)))
+r_squared <- summary(mod_MH)$r.squared
+adj_r_squared <- summary(mod_MH)$adj.r.squared
+print("Model Fit:")
+print(paste("R-squared =", round(r_squared, 3)))
+print(paste("Adjusted R-squared =", round(adj_r_squared, 3)))
+sink()
+
+#estimate: The estimated value of the regression term.
+#p.value: The two-sided p-value associated with the observed statistic.
+#statistic: The value of a T-statistic to use in a hypothesis that the regression term is non-zero.
+```
+
+```{r}
+tidy(mod_SES, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_Ed, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_ADI, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_All, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_MH, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+```
+
+```{r}
+coef_data <- tidy(mod_All, conf.int = TRUE, conf.level = 0.95)
+
+coef_data <- coef_data %>%
+  filter(term != "(Intercept)") %>%
+  mutate(term = case_when(
+    term == "In1" ~ "Income-to-Need",
+    term == "Ed" ~ "Parental Education",
+    term == "ADI" ~ "Area Deprivation Index",
+    term == "SexOrthogonal1" ~ "Gender",
+    term == "In1:SexOrthogonal1" ~ "Income-to-Need × Gender",
+    term == "Ed:SexOrthogonal1" ~ "Parental Education × Gender",
+    term == "ADI:SexOrthogonal1" ~ "Area Deprivation Index × Gender",
+    TRUE ~ term  
+  ))
+
+p <- ggplot(coef_data, aes(x = estimate, y = term)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high), 
+                  position = position_dodge(width = 0.5),
+                  color = "#6591a3") +
+  theme_ipsum() +
+  theme(
+    axis.title.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "lightgray", color = NA),
+    strip.text = element_text(face = "bold"),
+    axis.title.x = element_text(hjust = 0.5, face="bold")
+  ) +
+  labs(
+    x = "Coefficient Estimate"
+  )
+print(p)
+ggsave("Log Results.png", p, dpi = 600, width=5, height=6)
+```
+
+
+# Trajectory
+```{r}
+jpeg(file="2. Trajectory_Elb_Optimal Nr of Clusters.jpeg")
+Elb <- fviz_nbclust(DataImp[,22], kmeans, method = "wss") +
+     labs(subtitle = "2. Elbow method")
+Elb
+dev.off()
+
+jpeg(file="2. Trajectory_Sil_Optimal Nr of Clusters.jpeg")
+Sil <- fviz_nbclust(DataImp[,22], kmeans, method = "silhouette")+ 
+      labs(subtitle = "2. Silhouette method")
+Sil
+dev.off()
+
+rm(Elb,Sil)
+```
+
+# K-means Clustering
+```{r}
+set.seed(213)
+Trajectory <- kmeans(DataImp[,22], 3, iter.max = 10, nstart = 50) 
+Trajectory$size
+Trajectory$centers
+summary(Trajectory)
+```
+
+```{r}
+#Reorder largest as first
+Trajectory$cluster <- as.numeric(as.character(Trajectory$cluster))
+temp <- Trajectory$cluster
+Trajectory$cluster[temp == 1] <- 3
+Trajectory$cluster[temp == 3] <- 1
+#table(Trajectory$cluster)
+```
+
+```{r}
+GroupsT <- as.factor(Trajectory$cluster)
+
+my_colors <- c("#5a7302", "#8ab10e", "#c7db8f")
+
+PlotCluster <- data.frame(c(DataImp$b1),     
+                              c(DataImp$b2),
+                              c(DataImp$b3),
+                              as.factor(c(id,id)),         
+                              as.factor(GroupsT))              
+colnames(PlotCluster)<-c('~10 Years','~12 Years','~14 Years','ID','Groups')  
+
+PlotCluster<-melt(PlotCluster,by='ID')
+
+BrainPlot <- ggplot(PlotCluster,aes(variable,value,group=ID,col=Groups))+
+  geom_point(position = "jitter", size=1,alpha=.3)+
+  geom_line(position = "jitter", alpha=.1)+
+  ylab('FA per participant')+
+  xlab('Timepoints')+
+  facet_grid(~factor(Groups, levels=c("1","2","3")), 
+             labeller = as_labeller(c("1" = "Group 1: Increasing", "2" = "Group 2: Steep Increasing", "3" = "Group 3: Decreasing")))+
+  scale_color_manual(values = my_colors,
+                     breaks =c("1","2","3"))+
+  guides(col = FALSE)+
+  theme_ipsum() +
+  theme(axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 11, face = "bold"), #Groups name
+        axis.title.x = element_text(hjust = 0.5, size = 12, face = "bold"), #timepoints
+        axis.title.y = element_text(hjust = 0.5, size = 12, face = "bold"), #FA
+        axis.text.x = element_text(size = 9, angle = 10),
+        plot.background = element_rect(fill = "white"),
+        strip.text.x = element_text(hjust = 0.5))
+
+BrainPlot + geom_smooth(method = "lm", formula = y ~ poly(x, 2), se = FALSE, aes(group = Groups), color="#b93956") 
+
+ggsave(file='2. Clusters_Trajectory.png', width=7, height=4, dpi=600)
+```
+
+```{r}
+colors <- c("#5a7302", "#8ab10e", "#c7db8f")
+
+TrajectoryPlot <- ggplot(PlotCluster, 
+                    aes(x = variable, y = value, 
+                        group = Groups, col = Groups, fill = Groups, linetype = Groups)) +
+  geom_point(position = "jitter", size=1,alpha=.01)+
+  geom_line(position = "jitter", alpha=.01)+
+  stat_summary(fun = mean, geom = "line", aes(group = Groups), size = 1.5) + 
+  stat_summary(fun = mean, geom = "point", size = 2) + 
+  ylab('FA Trajectory') +
+  xlab('Timepoints') +
+  scale_color_manual(values = colors, 
+                     labels = c("Increase","Steep increase","Decrease")) +
+  scale_fill_manual(values = colors) +
+  theme_ipsum() +
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    axis.title.x = element_text(hjust = 0.5, size = 12, face = "bold"), 
+    axis.title.y = element_text(hjust = 0.5, size = 12, face = "bold"),
+    axis.text.x = element_text(size = 12),
+    plot.background = element_rect(fill = "white", color = NA)
+  ) +
+  guides(linetype = FALSE, fill = FALSE)
+
+TrajectoryPlot
+ggsave(file='2. Trends_Trajectory.png', width=6, height=5, dpi=600)
+```
+
+# Regressions
+```{r}
+DataImp$GroupsT <- as.factor(Trajectory$cluster)
+DataImp[,2:23] <- apply(DataImp[,2:23],2, function(x) as.numeric(as.character(x)))
+
+# Regression of Cluster groups with income, interacting with gender
+mod_SES <- multinom(GroupsT ~ In1*SexOrthogonal, data = DataImp)
+
+# Regression of Cluster groups with income, interacting with gender
+mod_Ed <- multinom(GroupsT ~ Ed*SexOrthogonal, data = DataImp)
+
+# Regression of Cluster groups with income, interacting with gender 
+mod_ADI <- multinom(GroupsT ~ ADI*SexOrthogonal, data = DataImp)
+
+# Combine
+mod_All <- multinom(GroupsT ~ (In1 + Ed + ADI) * SexOrthogonal, data = DataImp)
+
+# Regression of mental health issues at T3 dependent on Cluster groups, interacting with gender
+mod_MH <- lm(m3 ~ GroupsT*SexOrthogonal, data = DataImp)
+```
+
+```{r}
+extract_model_info <- function(model, model_name) {
+  tidy_model <- tidy(model, conf.int = TRUE)
+  glance_model <- glance(model)
+  
+  data.frame(
+    Model = model_name,
+    Term = tidy_model$term,
+    Estimate = round(tidy_model$estimate, 3),
+    CI_Lower = round(tidy_model$conf.low, 3),
+    CI_Upper = round(tidy_model$conf.high, 3),
+    P_Value = round(tidy_model$p.value, 3),
+    AIC = round(glance_model$AIC, 2)
+  )
+}
+
+results_SES <- extract_model_info(mod_SES, "Income-to-Need")
+results_Ed <- extract_model_info(mod_Ed, "Education")
+results_ADI <- extract_model_info(mod_ADI, "Area Deprivation")
+
+all_results <- rbind(results_SES, results_Ed, results_ADI)
+
+ft <- flextable(all_results)
+ft <- autofit(ft)
+ft <- add_header_lines(ft, "Logistic Regression Results for Cluster Group Membership - Trajectory")
+
+doc <- read_docx()
+doc <- body_add_flextable(doc, ft)
+print(doc, target = "Regression Results SES - Trajectory.docx")
+
+### For Mental Health ###
+
+model_summary <- summary(mod_MH)
+tidy_results <- tidy(mod_MH, conf.int = TRUE)
+glance_results <- glance(mod_MH)
+
+results_table <- data.frame(
+  Term = tidy_results$term,
+  Estimate = round(tidy_results$estimate, 3),
+  Std_Error = round(tidy_results$std.error, 3),
+  t_value = round(tidy_results$statistic, 3),
+  P_value = round(tidy_results$p.value, 3),
+  CI_Lower = round(tidy_results$conf.low, 3),
+  CI_Upper = round(tidy_results$conf.high, 3)
+)
+
+ft <- flextable(results_table)
+ft <- autofit(ft)
+ft <- add_header_lines(ft, "Linear Regression Results: Behavioural/Emotional Issues - Trajectory")
+
+# Add model summary statistics
+ft <- add_footer_lines(ft, c(
+  paste("R-squared:", round(glance_results$r.squared, 3)),
+  paste("Adjusted R-squared:", round(glance_results$adj.r.squared, 3)),
+  paste("F-statistic:", round(glance_results$statistic, 2), 
+        "on", glance_results$df, "and", glance_results$df.residual, "DF"),
+  paste("p-value:", format.pval(glance_results$p.value, digits = 3))
+))
+
+doc <- read_docx()
+doc <- body_add_flextable(doc, ft)
+
+print(doc, target = "Regression Results - MH - Trajectory.docx")
+```
+
+## Regression results
+```{r}
+options(scipen = 999)
+
+model_list <- list(
+  SES = mod_SES,
+  Education = mod_Ed,
+  ADI = mod_ADI,
+  Combined = mod_All
+)
+
+for (model_name in names(model_list)) {
+  sink(paste0("2. Trajectory_", model_name, ".txt"))
+  
+  model <- model_list[[model_name]]
+  
+  print(Anova(model, type=3))
+  print(summary(model))
+  
+  z <- summary(model)$coefficients / summary(model)$standard.errors
+  p <- (1 - pnorm(abs(z), 0, 1)) * 2
+  
+  print("Z-scores:")
+  print(z)
+  print("P-values:")
+  print(p)
+  
+  # Likelihood ratio test
+  null_model <- multinom(GroupsT ~ 1, data = DataImp)
+  lrt <- anova(null_model, model)
+  
+  print("Likelihood Ratio Test:")
+  print(lrt)
+  
+  # Extract chi-square and p-value from LRT
+  chi_square <- lrt$`LR stat.`[2]
+  df <- lrt$`df`[2]
+  p_value <- lrt$`Pr(Chi)`[2]
+  
+  print("Overall Model χ² Test:")
+  print(paste("χ²(", df, ") =", round(chi_square, 2), ", p =", format.pval(p_value, digits = 3)))
+  
+  sink()
+}
+
+sink("2. Trajectory_MH.txt")
+print("ANOVA Table:")
+print(anova(mod_MH))
+print("Model Summary:")
+print(summary(mod_MH))
+coef_table <- summary(mod_MH)$coefficients
+print("Coefficients Table:")
+print(coef_table)
+f_statistic <- summary(mod_MH)$fstatistic
+df1 <- f_statistic[2]
+df2 <- f_statistic[3]
+p_value <- pf(f_statistic[1], df1, df2, lower.tail = FALSE)
+print("Overall Model F-Test:")
+print(paste("F(", df1, ",", df2, ") =", round(f_statistic[1], 2), 
+            ", p =", format.pval(p_value, digits = 3)))
+r_squared <- summary(mod_MH)$r.squared
+adj_r_squared <- summary(mod_MH)$adj.r.squared
+print("Model Fit:")
+print(paste("R-squared =", round(r_squared, 3)))
+print(paste("Adjusted R-squared =", round(adj_r_squared, 3)))
+sink()
+```
+
+
+```{r}
+tidy(mod_SES, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_Ed, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_ADI, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_All, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_MH, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+```
+
+```{r}
+coef_data <- tidy(mod_All, conf.int = TRUE, conf.level = 0.95)
+
+coef_data <- coef_data %>%
+  filter(term != "(Intercept)") %>%
+  mutate(term = case_when(
+    term == "In1" ~ "Income-to-Need",
+    term == "Ed" ~ "Parental Education",
+    term == "ADI" ~ "Area Deprivation Index",
+    term == "SexOrthogonal1" ~ "Gender",
+    term == "In1:SexOrthogonal1" ~ "Income-to-Need × Gender",
+    term == "Ed:SexOrthogonal1" ~ "Parental Education × Gender",
+    term == "ADI:SexOrthogonal1" ~ "Area Deprivation Index × Gender",
+    TRUE ~ term  
+  ))
+
+group_labels <- c(
+  "2" = "Group 1 vs Group 2 (steep increase)",
+  "3" = "Group 1 vs Group 3 (decrease)"
+)
+
+p <- ggplot(coef_data, aes(x = estimate, y = term, color = y.level)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high), 
+                  position = position_dodge(width = 0.5)) +
+  scale_color_manual(values = c("2" = "#8ab10e", "3" ="#c7db8f"), name = "Group") +
+  facet_wrap(~ y.level, ncol = 1, labeller = as_labeller(group_labels)) +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_blank(),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "lightgray", color = NA),
+    strip.text = element_text(face = "bold")
+  ) +
+  labs(
+    x = "Coefficient Estimate",
+    subtitle = "SES and group membership"
+  ) +
+  scale_x_continuous(limits = c(-0.3, 0.5), breaks = seq(-0.3, 0.5, 0.25))
+
+print(p)
+ggsave("Log Results - Trajectory.png", p, width=5, height=5, dpi=600)
+```
+
+# Height
+```{r}
+jpeg(file="3. Height_Elb_Optimal Nr of Clusters.jpeg")
+Elb <- fviz_nbclust(DataImp[,23], kmeans, method = "wss") +  
+     labs(subtitle = "3. Elbow method")
+Elb
+dev.off()
+
+jpeg(file="3. Height_Sil_Optimal Nr of Clusters.jpeg")
+Sil <- fviz_nbclust(DataImp[,23], kmeans, method = "silhouette")+ 
+      labs(subtitle = "3. Silhouette method")
+Sil
+dev.off()
+```
+
+# K-means Clustering
+```{r}
+set.seed(234)
+Height <- kmeans(DataImp[,23], 2, iter.max = 10, nstart = 50) 
+Height$size
+Height$centers
+summary(Height)
+```
+
+```{r}
+my_colors <- c("#00486b","#6591a3")
+
+GroupsH <- as.factor(Height$cluster)
+
+PlotCluster <- data.frame(c(DataImp$b1),     
+                              c(DataImp$b2),
+                              c(DataImp$b3),
+                              as.factor(c(id,id)),         
+                              as.factor(GroupsH))              
+colnames(PlotCluster)<-c('~10 Years','~12 Years','~14 Years','ID','Cluster')  
+
+PlotCluster<-melt(PlotCluster,by='ID')
+
+BrainPlot <- ggplot(PlotCluster,aes(variable,value,group=ID,col=Cluster))+
+  geom_point(position = "jitter", size=1,alpha=.3)+
+  geom_line(position = "jitter", alpha=.1)+
+  ylab('FA per participant')+
+  xlab('Timepoints')+
+  facet_grid(~factor(Cluster, levels=c("1","2")), 
+             labeller = as_labeller(c("1" = "Group 1: High", "2" = "Group 2: Low")))+
+  scale_color_manual(values = my_colors,
+                     breaks =c("1","2"))+
+  guides(col = FALSE)+
+  theme_ipsum() +
+  theme(axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 12, face = "bold"), #cluster name
+        axis.title.x = element_text(hjust = 0.5, size = 12, face = "bold"), #timepoints
+        axis.title.y = element_text(hjust = 0.5, size = 12, face = "bold"), #FA
+        axis.text.x = element_text(size = 9, angle = 10),
+        plot.background = element_rect(fill = "white"),
+        strip.text.x = element_text(hjust = 0.5))
+
+BrainPlot + geom_smooth(method = "lm", formula = y ~ poly(x, 2), se = FALSE, aes(group = Cluster), color="#b93956") 
+
+ggsave(file='3. Clusters_Height.png', width=6, height=4, dpi=600)
+```
+
+# Regressions
+```{r}
+DataImp$GroupsH <- as.factor(Height$cluster)
+DataImp[,2:23] <- apply(DataImp[,2:23],2, function(x) as.numeric(as.character(x)))
+
+# Regression of Cluster groups with income, interacting with gender
+mod_SES <- glm(GroupsH ~ In1*SexOrthogonal, data = DataImp, family = binomial(link = "logit"))
+
+# Regression of Cluster groups with income, interacting with gender
+mod_Ed <- glm(GroupsH ~ Ed*SexOrthogonal, data = DataImp, family = binomial(link = "logit"))
+
+# Regression of Cluster groups with income, interacting with gender
+mod_ADI <- glm(GroupsH ~ ADI*SexOrthogonal, data = DataImp, family = binomial(link = "logit"))
+
+# Combine
+mod_All <- glm(GroupsH ~ (In1 + Ed + ADI) * SexOrthogonal, data = DataImp, family = binomial(link = "logit"))
+
+# Regression of mental health issues at T3 dependent on Cluster groups, interacting with gender
+mod_MH <- lm(m3 ~ GroupsH*SexOrthogonal, data = DataImp)
+```
+
+```{r}
+extract_model_info <- function(model, model_name) {
+  tidy_model <- tidy(model, conf.int = TRUE)
+  glance_model <- glance(model)
+  
+  data.frame(
+    Model = model_name,
+    Term = tidy_model$term,
+    Estimate = round(tidy_model$estimate, 3),
+    CI_Lower = round(tidy_model$conf.low, 3),
+    CI_Upper = round(tidy_model$conf.high, 3),
+    P_Value = round(tidy_model$p.value, 3),
+    AIC = round(glance_model$AIC, 2)
+  )
+}
+
+results_SES <- extract_model_info(mod_SES, "Income-to-Need")
+results_Ed <- extract_model_info(mod_Ed, "Education")
+results_ADI <- extract_model_info(mod_ADI, "Area Deprivation")
+
+all_results <- rbind(results_SES, results_Ed, results_ADI)
+
+ft <- flextable(all_results)
+ft <- autofit(ft)
+ft <- add_header_lines(ft, "Logistic Regression Results for Cluster Group Membership - Level")
+
+doc <- read_docx()
+doc <- body_add_flextable(doc, ft)
+print(doc, target = "Regression Results SES - Level.docx")
+
+### For Mental Health ###
+
+model_summary <- summary(mod_MH)
+tidy_results <- tidy(mod_MH, conf.int = TRUE)
+glance_results <- glance(mod_MH)
+
+results_table <- data.frame(
+  Term = tidy_results$term,
+  Estimate = round(tidy_results$estimate, 3),
+  Std_Error = round(tidy_results$std.error, 3),
+  t_value = round(tidy_results$statistic, 3),
+  P_value = round(tidy_results$p.value, 3),
+  CI_Lower = round(tidy_results$conf.low, 3),
+  CI_Upper = round(tidy_results$conf.high, 3)
+)
+
+ft <- flextable(results_table)
+ft <- autofit(ft)
+ft <- add_header_lines(ft, "Linear Regression Results: Behavioural/Emotional Issues - Level")
+
+# Add model summary statistics
+ft <- add_footer_lines(ft, c(
+  paste("R-squared:", round(glance_results$r.squared, 3)),
+  paste("Adjusted R-squared:", round(glance_results$adj.r.squared, 3)),
+  paste("F-statistic:", round(glance_results$statistic, 2), 
+        "on", glance_results$df, "and", glance_results$df.residual, "DF"),
+  paste("p-value:", format.pval(glance_results$p.value, digits = 3))
+))
+
+doc <- read_docx()
+doc <- body_add_flextable(doc, ft)
+
+print(doc, target = "Regression Results - MH - Level.docx")
+```
+
+## Regression results
+```{r}
+options(scipen = 999)
+
+sink("3. Height_SES.txt")
+Anova(mod_SES, type=3) 
+summary(mod_SES)
+zPT <- summary(mod_SES)$coefficients/summary(mod_SES)$standard.errors
+zPT
+pPT<- (1 - pnorm(abs(zPT), 0, 1)) * 2
+pPT
+null_deviance <- mod_SES$null.deviance
+residual_deviance <- mod_SES$deviance
+df_diff <- mod_SES$df.null - mod_SES$df.residual
+chi_square <- null_deviance - residual_deviance
+p_value <- pchisq(chi_square, df_diff, lower.tail = FALSE)
+print("Overall Model χ² Test:")
+print(paste("χ²(", df_diff, ") =", round(chi_square, 2), ", p =", format.pval(p_value, digits = 3)))
+sink()
+
+sink("3. Height_Education.txt")
+Anova(mod_Ed, type=3) 
+summary(mod_Ed)
+zPT <- summary(mod_Ed)$coefficients/summary(mod_Ed)$standard.errors
+zPT
+pPT <- (1 - pnorm(abs(zPT), 0, 1)) * 2
+pPT
+null_deviance <- mod_Ed$null.deviance
+residual_deviance <- mod_Ed$deviance
+df_diff <- mod_Ed$df.null - mod_Ed$df.residual
+chi_square <- null_deviance - residual_deviance
+p_value <- pchisq(chi_square, df_diff, lower.tail = FALSE)
+print("Overall Model χ² Test:")
+print(paste("χ²(", df_diff, ") =", round(chi_square, 2), ", p =", format.pval(p_value, digits = 3)))
+sink()
+
+sink("3. Height_ADI.txt")
+Anova(mod_ADI, type=3) 
+summary(mod_ADI)
+zPT <- summary(mod_ADI)$coefficients/summary(mod_ADI)$standard.errors
+zPT
+pPT<- (1 - pnorm(abs(zPT), 0, 1)) * 2
+null_deviance <- mod_ADI$null.deviance
+residual_deviance <- mod_ADI$deviance
+df_diff <- mod_ADI$df.null - mod_ADI$df.residual
+chi_square <- null_deviance - residual_deviance
+p_value <- pchisq(chi_square, df_diff, lower.tail = FALSE)
+print("Overall Model χ² Test:")
+print(paste("χ²(", df_diff, ") =", round(chi_square, 2), ", p =", format.pval(p_value, digits = 3)))
+sink()
+
+sink("3. Height_Combined.txt")
+Anova(mod_All, type=3) 
+summary(mod_All)
+zPT <- summary(mod_All)$coefficients/summary(mod_All)$standard.errors
+zPT
+pPT<- (1 - pnorm(abs(zPT), 0, 1)) * 2
+null_deviance <- mod_All$null.deviance
+residual_deviance <- mod_All$deviance
+df_diff <- mod_All$df.null - mod_All$df.residual
+chi_square <- null_deviance - residual_deviance
+p_value <- pchisq(chi_square, df_diff, lower.tail = FALSE)
+print("Overall Model χ² Test:")
+print(paste("χ²(", df_diff, ") =", round(chi_square, 2), ", p =", format.pval(p_value, digits = 3)))
+sink()
+
+sink("3. Height_MH.txt")
+print("ANOVA Table:")
+print(anova(mod_MH))
+print("Model Summary:")
+print(summary(mod_MH))
+coef_table <- summary(mod_MH)$coefficients
+print("Coefficients Table:")
+print(coef_table)
+f_statistic <- summary(mod_MH)$fstatistic
+df1 <- f_statistic[2]
+df2 <- f_statistic[3]
+p_value <- pf(f_statistic[1], df1, df2, lower.tail = FALSE)
+print("Overall Model F-Test:")
+print(paste("F(", df1, ",", df2, ") =", round(f_statistic[1], 2), 
+            ", p =", format.pval(p_value, digits = 3)))
+r_squared <- summary(mod_MH)$r.squared
+adj_r_squared <- summary(mod_MH)$adj.r.squared
+print("Model Fit:")
+print(paste("R-squared =", round(r_squared, 3)))
+print(paste("Adjusted R-squared =", round(adj_r_squared, 3)))
+sink()
+```
+
+```{r}
+tidy(mod_SES, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_Ed, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_ADI, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_All, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+
+tidy(mod_MH, conf.int = TRUE, exponentiate = TRUE) %>% 
+  kable() %>% 
+  kable_classic(html_font="Cambria", full_width = FALSE)
+```
+
+```{r}
+coef_data <- tidy(mod_All, conf.int = TRUE, conf.level = 0.95)
+
+coef_data <- coef_data %>%
+  filter(term != "(Intercept)") %>%
+  mutate(term = case_when(
+    term == "In1" ~ "Income-to-Need",
+    term == "Ed" ~ "Parental Education",
+    term == "ADI" ~ "Area Deprivation Index",
+    term == "SexOrthogonal1" ~ "Gender",
+    term == "In1:SexOrthogonal1" ~ "Income-to-Need × Gender",
+    term == "Ed:SexOrthogonal1" ~ "Parental Education × Gender",
+    term == "ADI:SexOrthogonal1" ~ "Area Deprivation Index × Gender",
+    TRUE ~ term  
+  ))
+
+p <- ggplot(coef_data, aes(x = estimate, y = term)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high), 
+                  position = position_dodge(width = 0.5),
+                  color = "#6591a3") +
+  theme_ipsum() +
+  theme(
+    axis.title.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "lightgray", color = NA),
+    strip.text = element_text(face = "bold"),
+    axis.title.x = element_text(hjust = 0.5, face="bold")
+  ) +
+  labs(
+    x = "Coefficient Estimate",
+    subtitle = "Effects of SES measures on group membership"
+  )
+print(p)
+ggsave("Log Results - Level.png", p, dpi = 600, width = 10, height = 6)
+```
+
+
+```{r}
+KMeans_Groups <- dplyr::select(DataImp,
+                   "src_subject_id","In1","In2","In3","Ed","ADI","Sex","Groups","GroupsT","GroupsH","ADIRaw")
+
+names(KMeans_Groups)[2] <- "In1Scaled"
+names(KMeans_Groups)[3] <- "In2Scaled"
+names(KMeans_Groups)[4] <- "In3Scaled"
+names(KMeans_Groups)[5] <- "EdScaled"
+
+write_xlsx(KMeans_Groups, "KMeans_Groups.xlsx")
+```
