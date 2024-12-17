@@ -1,0 +1,379 @@
+---
+title: "RI-CLPM P4 - SES"
+author: "Ayla Pollmann"
+date: "2023-07-28"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+# Introduction
+
+In this script, we are analyzing SES (measured as income-to-needs ratio) and their relationship with mental health & brain development.
+
+## Overview of analysis
+
+In this script, 
+
+* we conducted an RI-CLPM for SES
+
+***
+
+
+```{r setup, include=FALSE}
+packages <- c(
+  "lavaan", "sjmisc", "corrplot", "semTools", "tidyverse", "ggplot2", 
+  "readxl", "semPlot", "tidyr", "dplyr", "extrafont", "reshape2", 
+  "readr", "factoextra", "NbClust", "mice", "naniar", "writexl", 
+  "mdatools", "PerformanceAnalytics", "jmv", "caret", "MASS", 
+  "gplots", "mclust", "car", "reshape", "nnet", "kableExtra", 
+  "ggeffects", "marginaleffects", "FSA", "broom", "sjlabelled", 
+  "vtable", "pls", "cowplot", "patchwork", "hrbrthemes", "ggcorrplot", 
+  "patchwork"
+)
+
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages])
+}
+
+invisible(lapply(packages, library, character.only = TRUE))
+
+rm(installed_packages, packages)
+
+set.seed(245)
+```
+
+
+```{r, include = FALSE}
+# LOAD ABCD Data
+```
+
+# SES (Income to needs)
+## SES x brain connectivity x youth problems
+
+```{r}
+RICLPM_SES <- '
+# Create between components (random intercepts)
+RIx =~ 1*In1 + 1*In2 + 1*In3
+RIy =~ 1*b1Scaled + 1*b2Scaled + 1*b3Scaled
+RIz =~ 1*m1 + 1*m2 + 1*m3
+
+# Create within-person centered variables
+wx1 =~ 1*In1
+wx2 =~ 1*In2
+wx3 =~ 1*In3
+wy1 =~ 1*b1Scaled
+wy2 =~ 1*b2Scaled
+wy3 =~ 1*b3Scaled
+wz1 =~ 1*m1
+wz2 =~ 1*m2
+wz3 =~ 1*m3
+
+# Estimate lagged effects between within-person centered variables
+wx2 + wy2 + wz2 ~ wx1 + wy1 + wz1
+wx3 + wy3 + wz3 ~ wx2 + wy2 + wz2
+
+# Estimate covariance between within-person centered variables at first wave
+wx1 ~~ wy1 # Covariance
+wx1 ~~ wz1
+wy1 ~~ wz1
+
+# Estimate covariances between residuals of within-person centered variables 
+# (i.e., innovations)
+wx2 ~~ wy2
+wx2 ~~ wz2
+wy2 ~~ wz2
+wx3 ~~ wy3
+wx3 ~~ wz3
+wy3 ~~ wz3
+
+# Estimate variance and covariance of random intercepts
+RIx ~~ RIx
+RIy ~~ RIy
+RIz ~~ RIz
+RIx ~~ RIy
+RIx ~~ RIz
+RIy ~~ RIz
+
+# Estimate (residual) variance of within-person centered variables
+wx1 ~~ wx1 # Variances
+wy1 ~~ wy1
+wz1 ~~ wz1
+wx2 ~~ wx2 # Residual variances
+wy2 ~~ wy2
+wz2 ~~ wz2
+wx3 ~~ wx3
+wy3 ~~ wy3
+wz3 ~~ wz3
+'
+
+RICLPM_SES_fit <- lavaan::lavaan(RICLPM_SES,
+                                 data = Data,
+                                 missing = 'fiml', 
+                                 meanstructure = TRUE, 
+                                 int.ov.free = TRUE)
+
+summary(RICLPM_SES_fit, standardized = TRUE)
+
+fitMeasures(RICLPM_SES_fit, fit.measures = c("cfi","srmr", "rmsea", "pvalue", "chisq", "df","rmsea.ci.lower", "rmsea.ci.upper"))
+```
+
+# SES & Sex
+## RICLPM
+
+1 = Male; 2 = Female
+
+```{r}
+RICLPM_SES_fit_Sex <- lavaan::lavaan(RICLPM_SES,
+                             data = Data,
+                             meanstructure = TRUE, 
+                             missing = 'fiml', 
+                             int.ov.free = TRUE,
+                             group = "Sex")
+
+#summary(RICLPM_SES_fit_Sex, standardized = TRUE)
+fitMeasures(RICLPM_SES_fit_Sex, fit.measures = c("cfi","srmr", "rmsea", "pvalue", "chisq", "df","rmsea.ci.lower", "rmsea.ci.upper"))
+```
+
+# Contstrained lagged-parameters for multi-groups
+## Multigroup Peers
+
+```{r}
+MG_SES <- '
+  RIx =~ 1*In1 + 1*In2 + 1*In3
+  RIy =~ 1*b1Scaled + 1*b2Scaled + 1*b3Scaled
+  RIz =~ 1*m1 + 1*m2 + 1*m3
+  
+  wx1 =~ 1*In1 
+  wx2 =~ 1*In2
+  wx3 =~ 1*In3
+  wy1 =~ 1*b1Scaled
+  wy2 =~ 1*b2Scaled
+  wy3 =~ 1*b3Scaled
+  wz1 =~ 1*m1
+  wz2 =~ 1*m2
+  wz3 =~ 1*m3
+  
+  # Estimate lagged effects between within-person centered variables (constrain   
+  # autoregressive effects across groups) 
+  wx2 ~ c(a1, a1)*wx1 + c(b1Scaled, b1Scaled)*wy1 + c(c1, c1)*wz1 
+  wy2 ~ c(d1, d1)*wx1 + c(e1, e1)*wy1 + c(f1, f1)*wz1
+  wz2 ~ c(g1, g1)*wx1 + c(h1, h1)*wy1 + c(i1, i1)*wz1
+
+  wx3 ~ c(a2, a2)*wx2 + c(b2Scaled, b2Scaled)*wy2 + c(c2, c2)*wz2
+  wy3 ~ c(d2, d2)*wx2 + c(e2, e2)*wy2 + c(f2, f2)*wz2
+  wz3 ~ c(g2, g2)*wx2 + c(h2, h2)*wy2 + c(i2, i2)*wz2  
+
+  wx1 ~~ wy1
+  wx1 ~~ wz1
+  wy1 ~~ wz1
+  
+  wx2 ~~ wy2 
+  wx2 ~~ wz2
+  wy2 ~~ wz2
+  wx3 ~~ wy3
+  wx3 ~~ wz3
+  wy3 ~~ wz3
+  
+  RIx ~~ RIx
+  RIy ~~ RIy
+  RIz ~~ RIz
+  RIx ~~ RIy
+  RIx ~~ RIz
+  RIy ~~ RIz
+
+  wx1 ~~ wx1
+  wy1 ~~ wy1
+  wz1 ~~ wz1
+  wx2 ~~ wx2
+  wy2 ~~ wy2
+  wz2 ~~ wz2
+  wx3 ~~ wx3
+  wy3 ~~ wy3
+  wz3 ~~ wz3'
+  
+
+MG_Sex_fit <- lavaan(MG_SES, 
+                     data = Data,
+                     meanstructure = TRUE, 
+                     missing = 'fiml', 
+                     int.ov.free = TRUE,
+                     group = "Sex")
+
+ANOVASex <- anova(RICLPM_SES_fit_Sex, MG_Sex_fit)
+
+write.csv(ANOVASex, file='Global_ANOVA_SES_Sex.csv', row.names = FALSE)
+```
+
+# Correlations
+
+```{r}
+CorMerged <- Data[, c("In1", "In2", "In3", "b1Scaled", "b2Scaled", "b3Scaled", "m1", "m2", "m3")]
+
+CorMerged <- CorMerged %>%
+  mutate(across(everything(), ~as.numeric(as.character(.))))
+
+corr <- cor(CorMerged, use = "pairwise.complete.obs", method = "pearson") %>%
+  round(2)
+
+corr[is.nan(corr)] <- NA
+
+p.mat <- cor_pmat(CorMerged, method = "pearson")
+
+HeatmapPlot <- ggcorrplot(
+  corr,
+  type = "lower",
+  outline.color = "white",
+  lab = TRUE,
+  lab_size = 3, 
+  tl.cex = 10,  
+  tl.srt = 45,  
+  p.mat = p.mat,
+  sig.level = 0.001, 
+  insig = "pch",
+  ggtheme = ggplot2::theme_gray,
+  colors = c("#6B9AC4", "white", "#a84d5d"),
+  show.legend = TRUE,
+  legend.title = "Correlation"
+) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+custom_labels <- c("Income T1", "Income T2", "Income T3", 
+                   "WM T1", "WM T2", "WM T3", 
+                   "E&B T1", "E&B T2", "E&B T3")
+
+HeatmapPlot <- HeatmapPlot +
+  scale_x_discrete(labels = custom_labels, limits = names(CorMerged)) +
+  scale_y_discrete(labels = custom_labels, limits = names(CorMerged))
+
+print(HeatmapPlot)
+
+print(p.mat)
+
+ggsave("Overall_Correlation_Plot.png", plot = HeatmapPlot, width = 8, height = 6, units = "in")
+
+rm(p.mat,corr)
+```
+
+```{r}
+data_long <- Data %>%
+  select(src_subject_id, In1, In2, In3, m1, m2, m3) %>%
+  pivot_longer(
+    cols = -src_subject_id,
+    names_to = c(".value", "time"),
+    names_pattern = "(\\w+)(\\d)"
+  ) %>%
+  mutate(time = as.numeric(time))
+
+plot_simpsons_paradox <- function(data, var1, var2) {
+  overall_trend <- lm(as.formula(paste(var2, "~", var1)), data = data)
+  
+  ggplot(data, aes_string(x = var1, y = var2, group = "src_subject_id")) +
+    geom_point(aes(color = as.factor(src_subject_id)), alpha = 0.3) +
+    geom_line(aes(color = as.factor(src_subject_id)), alpha = 0.1) +
+    geom_smooth(method = "lm", aes(group = 1), se = FALSE, color = "black", size = 1.5) + 
+    facet_wrap(~time, ncol = 3, scales = "free") +
+    theme_minimal() +
+    theme(legend.position = "none") +
+    labs(
+      x = "Income-to-Need Ratio",
+      y = "Mental Health Score",
+      title = "Within-Person Trend per Timepoint (1-3)",
+      subtitle = paste("Overall trend:", round(coef(overall_trend)[2], 3))
+    )
+}
+
+p1 <- plot_simpsons_paradox(data_long, "In", "m")
+
+subject_averages <- data_long %>%
+  group_by(src_subject_id) %>%
+  summarize(
+    avg_In = mean(In, na.rm = TRUE),
+    avg_m = mean(m, na.rm = TRUE)
+  )
+
+p2 <- ggplot(subject_averages, aes(x = avg_In, y = avg_m)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  theme_minimal() +
+  labs(
+    x = "Average Income-to-Need Ratio",
+    y = "Average Mental Health Score",
+    title = "Between-Person Trend",
+    subtitle = "Each point represents a subject's average"
+  )
+
+combined_plot <- p1 / p2 +
+  plot_layout(heights = c(2, 1)) +
+  plot_annotation(
+    title = "Simpsons Paradox: Income-to-Need Ratio vs Mental Health",
+    subtitle = "Within-person trends and between-person averages",
+    theme = theme(plot.title = element_text(size = 16, face = "bold"),
+                  plot.subtitle = element_text(size = 12, face = "italic"))
+  )
+
+print(combined_plot)
+
+ggsave("simpsons_paradox_plot.png", combined_plot, width = 8, height = 7, dpi = 500)
+```
+
+```{r}
+plot_interaction <- function(data, var1, var2, title_text, x_label, y_label) {
+  overall_trend <- lm(as.formula(paste(var2, "~", var1)), data = data)
+  
+  ggplot(data, aes_string(x = var1, y = var2, group = "src_subject_id")) +
+    geom_point(aes(color = as.factor(src_subject_id)), alpha = 0.3) +
+    geom_line(aes(color = as.factor(src_subject_id)), alpha = 0.1) +
+    geom_smooth(method = "lm", aes(group = 1), se = FALSE, color = "black", size = 1.5) + 
+    facet_wrap(~time, ncol = 3, scales = "free") +
+    theme_minimal() +
+    theme(legend.position = "none") +
+    labs(
+      x = x_label,
+      y = y_label,
+      title = title_text,
+      subtitle = paste("Overall trend:", round(coef(overall_trend)[2], 3))
+    )
+}
+
+data_In1_m2 <- data_long %>% filter(time == 1) %>% select(src_subject_id, In1 = In, m2 = m, time)
+data_In2_m3 <- data_long %>% filter(time == 2) %>% select(src_subject_id, In2 = In, m3 = m, time)
+data_m1_In2 <- data_long %>% filter(time == 1) %>% select(src_subject_id, m1 = m, In2 = In, time)
+data_m2_In3 <- data_long %>% filter(time == 2) %>% select(src_subject_id, m2 = m, In3 = In, time)
+
+p_In1_m2 <- plot_interaction(data_In1_m2, "In1", "m2",
+                             title_text = "A: Income T1 vs Behavioural & Emotional Issues T2",
+                             x_label = "Income-to-Need Ratio T1",
+                             y_label = "Behavioural & Emotional Issues T2")
+
+p_In2_m3 <- plot_interaction(data_In2_m3, "In2", "m3",
+                             title_text = "B: Income T2 vs Behavioural & Emotional Issues T3",
+                             x_label = "Income-to-Need Ratio T2",
+                             y_label = "Behavioural & Emotional Issues T3")
+
+p_m1_In2 <- plot_interaction(data_m1_In2, "In2", "m1",
+                             title_text = "C: Behavioural & Emotional Issues T1 vs Income T2",
+                             y_label = "Behavioural & Emotional Issues T1",
+                             x_label = "Income-to-Need Ratio T2")
+
+p_m2_In3 <- plot_interaction(data_m2_In3, "In3","m2",
+                             title_text = "D: Behavioural & Emotional Issues T2 vs  Income T3",
+                             y_label = "Behavioural & Emotional Issues T2",
+                             x_label = "Income-to-Need Ratio T3")
+
+# Combine the plots into a single figure
+combined_plot <- (p_In1_m2 / p_In2_m3) | (p_m1_In2 / p_m2_In3) +
+  plot_layout(guides = 'collect') +
+  plot_annotation(
+    title = "Interactions of Income-to-Need Ratio and Mental Health Scores",
+    subtitle = "Exploring specific interactions between variables across time points",
+    theme = theme(plot.title = element_text(size = 16, face = "bold"),
+                  plot.subtitle = element_text(size = 12, face = "italic"))
+  )
+
+print(combined_plot)
+
+ggsave("interaction_plots.png", combined_plot, width = 10, height = 8, dpi = 500)
+```
